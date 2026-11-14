@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#05070d">
+<meta name="robots" content="noindex">
+<title>Manhunt</title>
+<meta name="description" content="One runner, a crew of hunters and a clock everyone shares.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Saira:ital,wdth,wght@1,75..125,600..800&display=swap" rel="stylesheet">
+<style>
+  /* Written by scripts/frontdoor.mjs from scripts/front-door.html in the Manhunt repo. Night Circuit colours. */
+  :root { --asphalt: #05070d; --paper: #eef1f6; --mute: #8a93a6; --line: #1c2230; --lit: #ff7a1a; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--asphalt); color: var(--paper); font-family: "Saira", system-ui, sans-serif; }
+  body {
+    display: grid; place-items: center; padding: 16px; text-align: center;
+    background: radial-gradient(60% 45% at 50% 38%, rgba(255, 122, 26, 0.10), transparent 70%), var(--asphalt);
+  }
+  main { max-width: 26rem; }
+  .lamp { width: 140px; height: 4px; margin: 0 auto 26px; transform: skewX(-24deg); background: var(--lit);
+    box-shadow: 0 0 18px var(--lit), 0 0 48px rgba(255, 122, 26, 0.55); animation: pulse 1.6s ease-in-out infinite; }
+  h1 { margin: 0; font-size: clamp(3.2rem, 15vw, 5rem); line-height: 1; font-style: italic; font-weight: 800; font-stretch: 112%;
+    letter-spacing: -0.01em; text-transform: uppercase;
+    background: linear-gradient(180deg, #ffffff 0%, #c9d1de 46%, #6f7a8c 54%, #e8edf5 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  p { margin: 18px 0 0; color: var(--mute); font-size: 1rem; line-height: 1.5; font-style: normal; font-weight: 600; }
+  p.off { color: var(--paper); }
+  .dots::after { content: ""; animation: dots 1.2s steps(4) infinite; }
+  @keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
+  @keyframes pulse { 50% { opacity: 0.55; } }
+  @media (prefers-reduced-motion: reduce) { .lamp, .dots::after { animation: none; } }
+</style>
+</head>
+<body>
+<main>
+  <div class="lamp" aria-hidden="true"></div>
+  <h1>Manhunt</h1>
+  <p id="say" class="dots" role="status">Opening the site</p>
+</main>
+<script>
+(function () {
+  // Filled in by scripts/frontdoor.mjs: where url.json lives and which addresses may be sent back to.
+  var DOOR = /*DOOR*/{"owner":"xandervveen","repo":"xandervveen.github.io","base":"","allow":["acquisition-eliminate-interests-discovery.trycloudflare.com"]}/*END*/;
+  var KEY = "manhunt-carry";
+  var say = document.getElementById("say");
+
+  function keep(value) {
+    try { if (value) localStorage.setItem(KEY, value); else localStorage.removeItem(KEY); } catch (e) {}
+  }
+  function carry() {
+    try { return localStorage.getItem(KEY); } catch (e) { return null; }
+  }
+  function siteAddress(raw) {
+    try {
+      var u = new URL(raw);
+      return u.protocol === "https:" && (/\.trycloudflare\.com$/.test(u.hostname) || DOOR.allow.indexOf(u.hostname) >= 0);
+    } catch (e) { return false; }
+  }
+
+  // The site hands over or takes back its login carry token: #mh-store=<token>&back=<url> or #mh-forget&back=<url>.
+  var hash = new URLSearchParams(location.hash.slice(1));
+  if (hash.has("mh-store") || hash.has("mh-forget")) {
+    keep(hash.get("mh-store"));
+    var back = hash.get("back");
+    location.replace(siteAddress(back) ? back : DOOR.base + "/");
+    return;
+  }
+
+  // Where to go on the site: ?to=/path, or the path this page was opened on (404.html catches every deeper path).
+  var to = new URLSearchParams(location.search).get("to");
+  if (!to) {
+    var rest = location.pathname.slice(DOOR.base.length) || "/";
+    to = /^\/(index\.html|404\.html)?$/.test(rest) ? "/" : rest + location.search + location.hash;
+  }
+  if (to.charAt(0) !== "/" || to.charAt(1) === "/") to = "/";
+
+  function timed(url, options, ms) {
+    var ctl = new AbortController();
+    var t = setTimeout(function () { ctl.abort(); }, ms);
+    options.signal = ctl.signal;
+    return fetch(url, options).finally(function () { clearTimeout(t); });
+  }
+  function readJson(res) {
+    if (!res.ok) throw new Error(res.status);
+    return res.json();
+  }
+
+  // The current address. The GitHub API is current right away but allows 60 looks an hour per network; the Pages copy
+  // of url.json has no such limit but lags a minute behind a change. So: the API first, then (and while waiting) Pages.
+  var apiAt = 0;
+  function current() {
+    var api = "https://api.github.com/repos/" + DOOR.owner + "/" + DOOR.repo + "/contents/url.json?ref=main";
+    var pages = DOOR.base + "/url.json?t=" + Date.now();
+    var fromPages = function () { return timed(pages, { cache: "no-store" }, 8000).then(readJson); };
+    if (Date.now() - apiAt < 60000) return fromPages();
+    apiAt = Date.now();
+    return timed(api, { cache: "no-store", headers: { Accept: "application/vnd.github.raw+json" } }, 8000).then(readJson).catch(fromPages);
+  }
+  // Whether the site at that address answers (a stopped tunnel gives an error page without the CORS header).
+  function alive(url) {
+    return timed(url + "/api/auth/door", { cache: "no-store" }, 9000).then(function (res) { return res.ok; }, function () { return false; });
+  }
+
+  var tries = 0;
+  function attempt() {
+    tries++;
+    current()
+      .then(function (data) {
+        if (!data || !siteAddress(data.url)) throw new Error("no address");
+        return alive(data.url).then(function (up) {
+          if (!up) throw new Error("down");
+          var token = carry();
+          var dest = data.url.replace(/\/+$/, "") + (token ? to.split("#")[0] + "#mh-carry=" + encodeURIComponent(token) : to);
+          location.replace(dest);
+        });
+      })
+      .catch(function () {
+        if (tries >= 2) {
+          say.className = "off";
+          say.textContent = "Manhunt is offline right now. Keep this page open: it opens the site by itself when it is back.";
+        }
+        setTimeout(attempt, tries < 3 ? 2500 : 6000);
+      });
+  }
+  attempt();
+})();
+</script>
+</body>
+</html>
