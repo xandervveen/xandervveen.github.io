@@ -1,0 +1,1 @@
+This repo is the fixed link to Manhunt. Manhunt.bat on the host's PC writes it.
